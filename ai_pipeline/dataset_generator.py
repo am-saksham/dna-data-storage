@@ -5,7 +5,7 @@ import pandas as pd
 from noise_simulator import BiologicalNoiseSimulator
 
 # Ensure we can import the compiled rust module from the parent directory
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "dna_codec", "target", "wheels")) 
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "rust_engine", "target", "wheels")) 
 import dna_codec
 
 def generate_random_bytes(length=32):
