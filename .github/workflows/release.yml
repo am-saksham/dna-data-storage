@@ -28,7 +28,7 @@ jobs:
           pip install pyinstaller maturin PyQt6 zstandard
           
       - name: Build Rust Library (dna_codec)
-        run: pip install ./dna_codec
+        run: pip install ./rust_engine
         
       - name: Build Windows Executable
         run: pyinstaller --name "DNACodec" --windowed --onefile --clean gui.py
@@ -62,7 +62,7 @@ jobs:
           pip install pyinstaller maturin PyQt6 zstandard
           
       - name: Build Rust Library (dna_codec)
-        run: pip install ./dna_codec
+        run: pip install ./rust_engine
         
       - name: Build Linux Executable
         run: pyinstaller --name "DNACodec" --windowed --onefile --clean gui.py

@@ -7,8 +7,8 @@ venv/
 .env
 
 # Rust
-dna_codec/target/
-dna_codec/Cargo.lock
+rust_engine/target/
+rust_engine/Cargo.lock
 
 # Build & Dist
 build/
