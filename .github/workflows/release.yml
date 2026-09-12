@@ -29,8 +29,7 @@ jobs:
           pip install -r requirements.txt || true
           
       - name: Build Rust Library (dna_codec)
-        working-directory: ./dna_codec
-        run: maturin develop --release
+        run: pip install ./dna_codec
         
       - name: Build Windows Executable
         run: pyinstaller --name "DNACodec" --windowed --onefile --clean gui.py
@@ -56,7 +55,7 @@ jobs:
           override: true
           
       - name: Install PyQT Dependencies
-        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-glx xvfb
+        run: sudo apt-get update && sudo apt-get install -y libgl1 xvfb
           
       - name: Install dependencies
         run: |
@@ -65,8 +64,7 @@ jobs:
           pip install -r requirements.txt || true
           
       - name: Build Rust Library (dna_codec)
-        working-directory: ./dna_codec
-        run: maturin develop --release
+        run: pip install ./dna_codec
         
       - name: Build Linux Executable
         run: pyinstaller --name "DNACodec" --windowed --onefile --clean gui.py
