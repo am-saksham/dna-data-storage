@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.env
+
+# Rust
+dna_codec/target/
+dna_codec/Cargo.lock
+
+# Build & Dist
+build/
+dist/
+*.spec
+*.app
+*.dmg
+*.exe
+*.deb
+
+# OS
+.DS_Store
+
+# Brain Data
+.gemini/

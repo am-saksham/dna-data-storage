@@ -1,0 +1,15 @@
+[package]
+name = "dna_codec"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "dna_codec"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.20.0", features = ["extension-module"] }
+rayon = "1.8"
+bitvec = "1.0"
+zstd = "0.13"
+reed-solomon = "0.2.1"
