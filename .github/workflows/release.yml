@@ -72,3 +72,35 @@ jobs:
         with:
           name: DNACodec-Linux
           path: dist/DNACodec
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller maturin PyQt6 zstandard
+          
+      - name: Build Rust Library
+        run: pip install ./rust_engine
+        
+      - name: Build Mac Executable and DMG
+        run: |
+          pyinstaller --name "DNACodec" --windowed --noupx --clean gui.py
+          hdiutil create -volname "DNACodec" -srcfolder dist/DNACodec.app -ov -format UDZO dist/DNACodec.dmg
+          
+      - name: Upload MacOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DNACodec-MacOS-dmg
+          path: dist/DNACodec.dmg
