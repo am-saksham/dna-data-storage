@@ -25,8 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller maturin
-          pip install -r requirements.txt || true
+          pip install pyinstaller maturin PyQt6 zstandard
           
       - name: Build Rust Library (dna_codec)
         run: pip install ./dna_codec
@@ -60,8 +59,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller maturin
-          pip install -r requirements.txt || true
+          pip install pyinstaller maturin PyQt6 zstandard
           
       - name: Build Rust Library (dna_codec)
         run: pip install ./dna_codec
