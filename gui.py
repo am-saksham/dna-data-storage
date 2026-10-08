@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QGraphicsView, QGraphicsScene, QGraphicsEllipseItem, 
                              QGraphicsLineItem, QFrame, QTabWidget, QProgressBar)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QPainter, QBrush, QColor, QPen
 
 # Ensure we can import the compiled rust module
 sys.path.append(os.path.join(os.path.dirname(__file__), "rust_engine", "target", "wheels")) 
