@@ -5,18 +5,91 @@ import math
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QFileDialog, 
                              QGraphicsView, QGraphicsScene, QGraphicsEllipseItem, 
-                             QGraphicsLineItem, QFrame)
-from PyQt6.QtCore import Qt, QPointF
-from PyQt6.QtGui import QPen, QBrush, QColor, QPainter, QFont
+                             QGraphicsLineItem, QFrame, QTabWidget, QProgressBar)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 # Ensure we can import the compiled rust module
-sys.path.append(os.path.join(os.path.dirname(__file__), "dna_codec", "target", "wheels")) 
+sys.path.append(os.path.join(os.path.dirname(__file__), "rust_engine", "target", "wheels")) 
 import dna_codec
+
+# Try to import Deep Learning dependencies
+try:
+    import torch
+    sys.path.append(os.path.join(os.path.dirname(__file__), "ai_pipeline"))
+    from model import DNADenoiserTransformer, DNAVocabulary
+    HAS_AI = True
+except ImportError:
+    HAS_AI = False
+
+
+class AIDecoderThread(QThread):
+    progress = pyqtSignal(int)
+    log = pyqtSignal(str)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+    
+    def __init__(self, fasta_dna):
+        super().__init__()
+        self.fasta_dna = fasta_dna
+        
+    def run(self):
+        try:
+            if not HAS_AI:
+                self.error.emit("PyTorch AI libraries not found. Cannot run neural network.")
+                return
+                
+            weights_path = os.path.join(os.path.dirname(__file__), "ai_pipeline", "weights", "dnadenoiser_sota.pth")
+            if not os.path.exists(weights_path):
+                self.log.emit("WARNING: No trained AI Brain found in weights folder. Skipping AI Denoising and jumping straight to Rust Decoder...")
+                time.sleep(2)
+                self.finished.emit(self.fasta_dna)
+                return
+                
+            self.log.emit("BOOTING UP PYTORCH NEURAL NETWORK...")
+            device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+            vocab = DNAVocabulary()
+            model = DNADenoiserTransformer(vocab_size=vocab.vocab_size).to(device)
+            model.load_state_dict(torch.load(weights_path, map_location=device, weights_only=True))
+            model.eval()
+            
+            self.log.emit("NEURAL NETWORK ACTIVE. DENOISING SEQUENCE...")
+            
+            # Since the model was trained on ~400 nucleotide chunks, we mathematically chunk the file for inference
+            chunk_size = 400 
+            chunks = [self.fasta_dna[i:i+chunk_size] for i in range(0, len(self.fasta_dna), chunk_size)]
+            
+            clean_dna_pieces = []
+            with torch.no_grad():
+                for i, chunk in enumerate(chunks):
+                    # Encode
+                    src_tensor = torch.tensor([vocab.encode(chunk)], dtype=torch.long).to(device)
+                    # For Seq2Seq inference without auto-regression (fast mode), we just push it through
+                    tgt_dummy = src_tensor.clone() 
+                    logits = model(src_tensor, tgt_dummy)
+                    predicted_indices = torch.argmax(logits, dim=-1)[0]
+                    clean_piece = vocab.decode(predicted_indices)
+                    clean_dna_pieces.append(clean_piece)
+                    
+                    # Update progress bar
+                    prog = int(((i + 1) / len(chunks)) * 100)
+                    self.progress.emit(prog)
+                    
+            clean_full_dna = "".join(clean_dna_pieces)
+            
+            # Post-process: remove SOS, EOS, and PAD tokens physically
+            clean_full_dna = clean_full_dna.replace("A", "A").replace("C", "C").replace("G", "G").replace("T", "T")
+            valid_bases = [c for c in clean_full_dna if c in "ACGT"]
+            
+            self.log.emit("DENOISING COMPLETE. HANDING TO RUST ENGINE...")
+            self.finished.emit("".join(valid_bases))
+            
+        except Exception as e:
+            self.error.emit(f"AI ERROR: {str(e)}")
+
 
 class NucleotideItem(QGraphicsEllipseItem):
     """Custom interactive graphic item for a single nucleotide"""
     def __init__(self, x, y, r, base, comp, index, app_ref, is_front):
-        # Center the ellipse at (x,y)
         super().__init__(x - r, y - r, r * 2, r * 2)
         self.base = base
         self.comp = comp
@@ -24,12 +97,8 @@ class NucleotideItem(QGraphicsEllipseItem):
         self.app_ref = app_ref
         self.is_front = is_front
         
-        # Enable hover events
         self.setAcceptHoverEvents(True)
-        
-        # Professional High-Tech Colors
         colors = {'A': '#39FF14', 'C': '#00FFFF', 'G': '#FFEA00', 'T': '#FF073A'}
-        
         self.setBrush(QBrush(QColor(colors.get(base, '#FFFFFF'))))
         
         if is_front:
@@ -40,10 +109,7 @@ class NucleotideItem(QGraphicsEllipseItem):
             self.setZValue(0)
             
     def hoverEnterEvent(self, event):
-        # Update the side panel on hover
         self.app_ref.update_side_panel(self.index, self.base, self.comp)
-        
-        # Highlight effect: widen the border
         pen = self.pen()
         pen.setWidth(3)
         pen.setColor(QColor("#FFFFFF"))
@@ -51,7 +117,6 @@ class NucleotideItem(QGraphicsEllipseItem):
         super().hoverEnterEvent(event)
         
     def hoverLeaveEvent(self, event):
-        # Remove highlight
         pen = self.pen()
         pen.setWidth(1)
         pen.setColor(QColor("#FFFFFF") if self.is_front else QColor("#111111"))
@@ -62,10 +127,9 @@ class NucleotideItem(QGraphicsEllipseItem):
 class DNAApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("DNA Codec Engine - Professional Edition")
+        self.setWindowTitle("DNA Storage System - Pro Edition")
         self.resize(1400, 900)
         
-        # Modern Dark Theme CSS
         self.setStyleSheet("""
             QMainWindow { background-color: #0F0F13; }
             QLabel { color: #E0E0E0; font-family: 'Segoe UI', Arial; font-size: 14px; }
@@ -79,14 +143,21 @@ class DNAApp(QMainWindow):
             }
             QPushButton:hover { background-color: #3D3D4A; border: 1px solid #5A5A6A; }
             QPushButton:pressed { background-color: #1D1D26; }
-            QFrame#sidePanel { 
-                background-color: #16161A; 
-                border-left: 1px solid #2A2A35; 
-            }
-            QFrame#metricsPanel {
-                background-color: #16161A;
+            QFrame#sidePanel { background-color: #16161A; border-left: 1px solid #2A2A35; }
+            QFrame#metricsPanel { background-color: #16161A; border: 1px solid #2A2A35; border-radius: 8px; }
+            QTabWidget::pane { border: none; background-color: #0F0F13; }
+            QTabBar::tab {
+                background: #16161A;
+                color: #888;
                 border: 1px solid #2A2A35;
-                border-radius: 8px;
+                padding: 12px 40px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QTabBar::tab:selected {
+                background: #007ACC;
+                color: white;
+                border: 1px solid #0099FF;
             }
         """)
         
@@ -99,58 +170,15 @@ class DNAApp(QMainWindow):
         main_layout.setContentsMargins(0,0,0,0)
         main_layout.setSpacing(0)
         
-        # --- LEFT SIDE (Controls & Matrix) ---
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(20,20,20,20)
-        left_layout.setSpacing(15)
+        self.tabs = QTabWidget()
+        self.tab_encoder = QWidget()
+        self.tab_decoder = QWidget()
         
-        # Controls
-        controls = QHBoxLayout()
-        btn_browse = QPushButton("ENCODE FILE")
-        btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_browse.clicked.connect(self.encode_file)
+        self.tabs.addTab(self.tab_encoder, "ENCODE FILE (BYTES → DNA)")
+        self.tabs.addTab(self.tab_decoder, "DECODE & AI RECOVER (DNA → BYTES)")
         
-        self.btn_save = QPushButton("EXPORT DNA (.FASTA)")
-        self.btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_save.clicked.connect(self.save_dna)
-        self.btn_save.setEnabled(False)
-        self.btn_save.setStyleSheet("background-color: #005080; color: #888;")
-        
-        self.lbl_status = QLabel("SYSTEM IDLE")
-        self.lbl_status.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 16px;")
-        
-        controls.addWidget(btn_browse)
-        controls.addWidget(self.btn_save)
-        controls.addSpacing(20)
-        controls.addWidget(self.lbl_status)
-        controls.addStretch()
-        
-        self.current_dna_string = None
-        
-        # Metrics Panel
-        metrics_frame = QFrame()
-        metrics_frame.setObjectName("metricsPanel")
-        metrics_layout = QHBoxLayout(metrics_frame)
-        self.lbl_metrics = QLabel("No Data Loaded")
-        metrics_layout.addWidget(self.lbl_metrics)
-        
-        # DNA Graphics Canvas
-        self.scene = QGraphicsScene()
-        self.view = QGraphicsView(self.scene)
-        # Hardware anti-aliasing removes the "cartoonish" pixelated edges
-        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.view.setStyleSheet("""
-            QGraphicsView {
-                background-color: #050505; 
-                border: 1px solid #2A2A35;
-                border-radius: 8px;
-            }
-        """)
-        
-        left_layout.addLayout(controls)
-        left_layout.addWidget(metrics_frame)
-        left_layout.addWidget(self.view, stretch=1)
+        self.setup_encoder_tab()
+        self.setup_decoder_tab()
         
         # --- RIGHT SIDE (Hover Info Panel) ---
         self.side_panel = QFrame()
@@ -168,37 +196,19 @@ class DNAApp(QMainWindow):
         
         self.lbl_info_base = QLabel("Base: -")
         self.lbl_info_base.setStyleSheet("font-size: 24px; margin-top: 10px;")
-        
         self.lbl_info_comp = QLabel("Complement: -")
         self.lbl_info_comp.setStyleSheet("font-size: 16px; color: #888888; margin-top: 5px;")
         
         self.lbl_info_class = QLabel("Structure: -")
         self.lbl_info_class.setStyleSheet("font-size: 14px; color: #777777; margin-top: 15px;")
-        
         self.lbl_info_bonds = QLabel("H-Bonds: -")
         self.lbl_info_bonds.setStyleSheet("font-size: 14px; color: #777777; margin-top: 5px;")
-        
         self.lbl_info_mass = QLabel("Molar Mass: -")
         self.lbl_info_mass.setStyleSheet("font-size: 14px; color: #777777; margin-top: 5px;")
-        
-        self.lbl_info_chunk = QLabel("Reed-Solomon Chunk: -")
-        self.lbl_info_chunk.setStyleSheet("font-size: 14px; color: #666666; margin-top: 25px;")
         
         instruction = QLabel("Hover over any node in the matrix\\nto inspect the exact physical\\nmolecule constraints.")
         instruction.setStyleSheet("font-size: 14px; color: #444444; margin-top: 30px;")
         instruction.setAlignment(Qt.AlignmentFlag.AlignTop)
-        
-        glossary_title = QLabel("SCIENTIFIC GLOSSARY")
-        glossary_title.setStyleSheet("font-size: 14px; font-weight: 800; color: #5A5A6A; margin-top: 30px; letter-spacing: 1px;")
-        
-        glossary_text = QLabel(
-            "<b>GC Content:</b> Ratio of G and C bases. Must stay near 50% so the DNA doesn't physically melt or fold on itself.<br><br>"
-            "<b>Homopolymer:</b> Repeating sequences (e.g. AAAA). They cause lab synthesizers to crash. Our engine mathematically prevents them.<br><br>"
-            "<b>Complement:</b> The opposite strand of the double-helix. Adenine (A) always pairs with Thymine (T). Cytosine (C) pairs with Guanine (G).<br><br>"
-            "<b>Reed-Solomon Chunk:</b> Data is split into mathematical blocks. If physical DNA mutates or degrades, the RS equations perfectly rebuild the missing file."
-        )
-        glossary_text.setWordWrap(True)
-        glossary_text.setStyleSheet("font-size: 13px; color: #777777; line-height: 1.5;")
         
         side_layout.addWidget(title)
         side_layout.addWidget(self.lbl_info_idx)
@@ -207,53 +217,174 @@ class DNAApp(QMainWindow):
         side_layout.addWidget(self.lbl_info_class)
         side_layout.addWidget(self.lbl_info_bonds)
         side_layout.addWidget(self.lbl_info_mass)
-        side_layout.addWidget(self.lbl_info_chunk)
         side_layout.addWidget(instruction)
-        side_layout.addWidget(glossary_title)
-        side_layout.addWidget(glossary_text)
         side_layout.addStretch()
         
-        main_layout.addWidget(left_widget, stretch=1)
+        main_layout.addWidget(self.tabs, stretch=1)
         main_layout.addWidget(self.side_panel)
+
+    def setup_encoder_tab(self):
+        layout = QVBoxLayout(self.tab_encoder)
+        layout.setContentsMargins(20,20,20,20)
+        
+        controls = QHBoxLayout()
+        btn_browse = QPushButton("ENCODE FILE")
+        btn_browse.clicked.connect(self.encode_file)
+        
+        self.btn_save = QPushButton("EXPORT DNA (.FASTA)")
+        self.btn_save.clicked.connect(self.save_dna)
+        self.btn_save.setEnabled(False)
+        self.btn_save.setStyleSheet("background-color: #005080; color: #888;")
+        
+        self.lbl_status = QLabel("SYSTEM IDLE")
+        self.lbl_status.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 16px;")
+        
+        controls.addWidget(btn_browse)
+        controls.addWidget(self.btn_save)
+        controls.addSpacing(20)
+        controls.addWidget(self.lbl_status)
+        controls.addStretch()
+        
+        self.current_dna_string = None
+        
+        metrics_frame = QFrame()
+        metrics_frame.setObjectName("metricsPanel")
+        metrics_layout = QHBoxLayout(metrics_frame)
+        self.lbl_metrics = QLabel("No Data Loaded")
+        metrics_layout.addWidget(self.lbl_metrics)
+        
+        self.scene = QGraphicsScene()
+        self.view = QGraphicsView(self.scene)
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.view.setStyleSheet("background-color: #050505; border: 1px solid #2A2A35; border-radius: 8px;")
+        
+        layout.addLayout(controls)
+        layout.addWidget(metrics_frame)
+        layout.addWidget(self.view, stretch=1)
+
+    def setup_decoder_tab(self):
+        layout = QVBoxLayout(self.tab_decoder)
+        layout.setContentsMargins(20,20,20,20)
+        
+        controls = QHBoxLayout()
+        btn_browse = QPushButton("UPLOAD NOISY DNA (.FASTA)")
+        btn_browse.clicked.connect(self.start_ai_decode)
+        btn_browse.setStyleSheet("background-color: #FF073A; color: white;")
+        
+        self.lbl_decode_status = QLabel("WAITING FOR SEQUENCE")
+        self.lbl_decode_status.setStyleSheet("color: #FFEA00; font-weight: bold; font-size: 16px;")
+        
+        controls.addWidget(btn_browse)
+        controls.addSpacing(20)
+        controls.addWidget(self.lbl_decode_status)
+        controls.addStretch()
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setStyleSheet("""
+            QProgressBar { border: 1px solid #2A2A35; border-radius: 5px; text-align: center; background: #16161A; color: white; font-weight: bold; }
+            QProgressBar::chunk { background-color: #007ACC; width: 10px; }
+        """)
+        self.progress_bar.setValue(0)
+        self.progress_bar.hide()
+        
+        self.lbl_decode_metrics = QLabel("Ready to denoise.")
+        self.lbl_decode_metrics.setStyleSheet("color: #888; font-size: 14px; margin-top: 10px; margin-bottom: 20px;")
+        
+        self.decode_scene = QGraphicsScene()
+        self.decode_view = QGraphicsView(self.decode_scene)
+        self.decode_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.decode_view.setStyleSheet("background-color: #050505; border: 1px solid #2A2A35; border-radius: 8px;")
+        
+        layout.addLayout(controls)
+        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.lbl_decode_metrics)
+        layout.addWidget(self.decode_view, stretch=1)
+        
+        self.recovered_bytes = None
+
+    def start_ai_decode(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select Noisy DNA File", "", "FASTA Files (*.fasta);;Text Files (*.txt)")
+        if not filepath: return
+        
+        with open(filepath, 'r') as f:
+            lines = f.readlines()
+            fasta_dna = "".join(l.strip() for l in lines if not l.startswith(">"))
+            
+        self.lbl_decode_status.setText("INITIALIZING DEEP LEARNING MODEL...")
+        self.lbl_decode_metrics.setText(f"Loaded {len(fasta_dna):,} noisy nucleotides.")
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        
+        # Start AI in background thread to prevent freezing GUI
+        self.ai_thread = AIDecoderThread(fasta_dna)
+        self.ai_thread.progress.connect(self.progress_bar.setValue)
+        self.ai_thread.log.connect(self.lbl_decode_status.setText)
+        self.ai_thread.finished.connect(self.run_rust_decoder)
+        self.ai_thread.error.connect(self.show_ai_error)
+        self.ai_thread.start()
+
+    def run_rust_decoder(self, clean_dna):
+        self.lbl_decode_status.setText("RUST ENGINE: REVERSING REED-SOLOMON MATH & ZSTD DECOMPRESSION...")
+        QApplication.processEvents()
+        
+        try:
+            start = time.time()
+            recovered_bytes = dna_codec.decode_full_pipeline(clean_dna)
+            elapsed = time.time() - start
+            
+            self.recovered_bytes = recovered_bytes
+            
+            self.lbl_decode_status.setText(f"FILE RECOVERED SUCCESSFULLY ({elapsed:.3f}s)!")
+            self.lbl_decode_status.setStyleSheet("color: #39FF14; font-weight: bold; font-size: 18px;")
+            self.lbl_decode_metrics.setText(f"Perfectly reconstructed original file: {len(recovered_bytes):,} bytes.")
+            self.progress_bar.hide()
+            
+            # Prompt user to save the recovered file
+            savepath, _ = QFileDialog.getSaveFileName(self, "Save Recovered File", "recovered_file.bin")
+            if savepath:
+                with open(savepath, 'wb') as f:
+                    f.write(recovered_bytes)
+                self.lbl_decode_metrics.setText(f"File saved perfectly to: {savepath}")
+                
+            self.draw_dna(clean_dna, target_scene=self.decode_scene)
+            
+        except Exception as e:
+            self.lbl_decode_status.setText("DECODE FAILED: DNA TOO CORRUPTED")
+            self.lbl_decode_status.setStyleSheet("color: #FF073A; font-weight: bold; font-size: 16px;")
+            self.lbl_decode_metrics.setText(f"Rust Error: {str(e)}")
+            self.progress_bar.hide()
+
+    def show_ai_error(self, err):
+        self.lbl_decode_status.setText("AI DENOISER CRASHED")
+        self.lbl_decode_status.setStyleSheet("color: #FF073A; font-weight: bold; font-size: 16px;")
+        self.lbl_decode_metrics.setText(str(err))
+        self.progress_bar.hide()
 
     def update_side_panel(self, idx, base, comp):
         self.lbl_info_idx.setText(f"Position: {idx:,}")
-        
         color_map = {'A': '#39FF14', 'C': '#00FFFF', 'G': '#FFEA00', 'T': '#FF073A'}
         color = color_map.get(base, '#FFF')
         
         self.lbl_info_base.setText(f'Base: <span style="color:{color}; font-weight:900; font-size:48px;">{base}</span>')
         self.lbl_info_comp.setText(f"Complement: {comp}")
         
-        if base in ['A', 'G']:
-            struct = "Purine (Double Ring)"
-        else:
-            struct = "Pyrimidine (Single Ring)"
-            
+        struct = "Purine (Double Ring)" if base in ['A', 'G'] else "Pyrimidine (Single Ring)"
         bonds = 3 if base in ['G', 'C'] else 2
         masses = {'A': 313.2, 'C': 289.2, 'G': 329.2, 'T': 304.2}
         
         self.lbl_info_class.setText(f"Structure: {struct}")
         self.lbl_info_bonds.setText(f"H-Bonds: {bonds}")
         self.lbl_info_mass.setText(f"Molar Mass: {masses.get(base, 0)} g/mol")
-        
-        # Calculate which 255-byte chunk this nucleotide belongs to
-        chunk_num = idx // (255 * 3) # Approx chunk size map
-        self.lbl_info_chunk.setText(f"Block Matrix ID: {chunk_num}")
 
-    def draw_dna(self, dna_string):
-        self.scene.clear()
+    def draw_dna(self, dna_string, target_scene=None):
+        scene = target_scene if target_scene else self.scene
+        scene.clear()
         
         def get_comp(b): return {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C'}.get(b, 'N')
         
-        height = 40
-        columns = 5
+        height, columns, y_offset, col_width, row_height = 40, 5, 30, 160, 20
         chunk_size = height * columns
-        y_offset = 30
-        col_width = 160
-        row_height = 20
         
-        # Render a large chunk for high-tech visualization
         display_limit = 4000
         display_dna = dna_string[:display_limit]
         
@@ -275,11 +406,10 @@ class DNAApp(QMainWindow):
                     x2 = base_x + amplitude * math.sin(t + math.pi)
                     y = y_offset + row * row_height
                     
-                    # Bridge
                     line = QGraphicsLineItem(x1, y, x2, y)
                     line.setPen(QPen(QColor("#333333"), 2))
                     line.setZValue(1)
-                    self.scene.addItem(line)
+                    scene.addItem(line)
                     
                     r = 6
                     if math.cos(t) > 0:
@@ -289,8 +419,8 @@ class DNAApp(QMainWindow):
                         n1 = NucleotideItem(x1, y, r, base, comp, idx, self, False)
                         n2 = NucleotideItem(x2, y, r, comp, base, idx, self, True)
                         
-                    self.scene.addItem(n1)
-                    self.scene.addItem(n2)
+                    scene.addItem(n1)
+                    scene.addItem(n2)
                     
             y_offset += height * row_height + 50
 
@@ -306,22 +436,14 @@ class DNAApp(QMainWindow):
             with open(filepath, 'rb') as f:
                 file_bytes = f.read()
                 
-            start_time = time.time()
+            start = time.time()
             dna_string = dna_codec.encode_full_pipeline(file_bytes)
-            elapsed = time.time() - start_time
+            elapsed = time.time() - start
             
             gc = dna_codec.get_gc_content(dna_string) * 100
             homo = dna_codec.get_max_homopolymer(dna_string)
             
-            # Update Metrics Panel
-            metrics_html = f"""
-            <span style="color:#888;">Original File Size:</span> <span style="color:#FFF;">{len(file_bytes):,} bytes</span> &nbsp;&nbsp;|&nbsp;&nbsp;
-            <span style="color:#888;">Encoded DNA Length:</span> <span style="color:#FFF;">{len(dna_string):,} nucleotides</span> &nbsp;&nbsp;|&nbsp;&nbsp;
-            <span style="color:#888;">GC Content:</span> <span style="color:#FFF;">{gc:.2f}%</span> &nbsp;&nbsp;|&nbsp;&nbsp;
-            <span style="color:#888;">Max Homopolymer:</span> <span style="color:#FFF;">{homo}</span>
-            """
-            self.lbl_metrics.setText(metrics_html)
-            
+            self.lbl_metrics.setText(f"<span style='color:#888;'>Size:</span> <span style='color:#FFF;'>{len(file_bytes):,} bytes</span> &nbsp;|&nbsp; <span style='color:#888;'>DNA Length:</span> <span style='color:#FFF;'>{len(dna_string):,} nt</span> &nbsp;|&nbsp; <span style='color:#888;'>GC Content:</span> <span style='color:#FFF;'>{gc:.2f}%</span>")
             self.lbl_status.setText(f"SUCCESS ({elapsed:.3f}s)")
             self.lbl_status.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 16px;")
             
@@ -334,28 +456,19 @@ class DNAApp(QMainWindow):
         except Exception as e:
             self.lbl_status.setText("FATAL ERROR")
             self.lbl_status.setStyleSheet("color: #FF073A; font-weight: bold; font-size: 16px;")
-            print(f"Error: {e}")
 
     def save_dna(self):
-        if not self.current_dna_string:
-            return
+        if not self.current_dna_string: return
         filepath, _ = QFileDialog.getSaveFileName(self, "Export DNA Sequence", "encoded_data.fasta", "FASTA Files (*.fasta);;Text Files (*.txt)")
         if filepath:
-            try:
-                with open(filepath, 'w') as f:
-                    if filepath.endswith('.fasta'):
-                        f.write(">Synthetic_DNA_Storage_Payload_v1\\n")
-                        # FASTA standard: 80 characters per line
-                        for i in range(0, len(self.current_dna_string), 80):
-                            f.write(self.current_dna_string[i:i+80] + "\\n")
-                    else:
-                        f.write(self.current_dna_string)
-                self.lbl_status.setText(f"EXPORTED TO {os.path.basename(filepath)}")
-                self.lbl_status.setStyleSheet("color: #00FFFF; font-weight: bold; font-size: 16px;")
-            except Exception as e:
-                self.lbl_status.setText("EXPORT ERROR")
-                self.lbl_status.setStyleSheet("color: #FF073A; font-weight: bold; font-size: 16px;")
-                print(f"Save Error: {e}")
+            with open(filepath, 'w') as f:
+                if filepath.endswith('.fasta'):
+                    f.write(">Synthetic_DNA_Storage_Payload_v1\\n")
+                    for i in range(0, len(self.current_dna_string), 80):
+                        f.write(self.current_dna_string[i:i+80] + "\\n")
+                else:
+                    f.write(self.current_dna_string)
+            self.lbl_status.setText(f"EXPORTED TO {os.path.basename(filepath)}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
